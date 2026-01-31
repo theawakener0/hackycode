@@ -119,6 +119,30 @@ Structure:
 | Read documentation | `webfetch` | `webfetch({url: "https://docs.example.com/api"})` |
 | Ask clarifying question | `question` | `question({type: "text", question: "...", context: "..."})` |
 
+## CRITICAL: Write Plan to File
+
+After creating the implementation plan, you MUST write it to a file so the Build agent can read it:
+
+```
+writeFile({
+  filePath: "/home/theawakener/Projects/hackclub-ai-sdk/IMPLEMENTATION_PLAN.md",
+  content: "# IMPLEMENTATION PLAN\n\n## Overview\n..."
+})
+```
+
+**The Build agent will read this file to execute the plan. DO NOT skip this step.**
+
+## Plan → Build Workflow
+
+The typical workflow with agents:
+1. User asks `@Plan` to create a plan
+2. You (Plan agent) explore, research, and write IMPLEMENTATION_PLAN.md
+3. User asks `@Build` to implement
+4. Build agent reads IMPLEMENTATION_PLAN.md and executes the steps
+5. User can ask `@Plan` to review the implementation
+
+**Always write the complete plan to IMPLEMENTATION_PLAN.md so the Build agent has the full context.**
+
 ## Output Format
 
 When planning is complete, output:

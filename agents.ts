@@ -1,6 +1,7 @@
-import { ToolLoopAgent, stepCountIs } from "ai";
+import { ToolLoopAgent } from "ai";
 import { model, hackclub } from "./config.ts";
 import * as tools from "./tools.ts";
+import { skillRegistry, enhancePromptWithSkills } from "./skills.ts";
 import BASE_PROMPT from "./prompts/agents/base.txt";
 import PLAN_PROMPT from "./prompts/agents/plan.txt";
 import BUILD_PROMPT from "./prompts/agents/build.txt";
@@ -84,6 +85,7 @@ export interface AgentContext {
   isComplete?: boolean;
 }
 
+
 // Shared tool set for all agents
 const sharedTools = {
   readFile: tools.readFileTool,
@@ -91,6 +93,9 @@ const sharedTools = {
   searchWeb: tools.searchWebTool,
   searchCodebase: tools.searchCodebaseTool,
   runCommand: tools.runCommandTool,
+  listSkills: tools.listSkillsTool,
+  useSkill: tools.useSkillTool,
+  findSkill: tools.findSkillTool,
 };
 
 // Custom stop condition that checks for completion
@@ -245,12 +250,15 @@ export const allAgents = {
 
 export { tools };
 
-// Helper to run agents with context and rate limiting
+// Helper to run agents with context, rate limiting, and skills
 export async function runAgentWithContext(
   selectedAgent: typeof Plan | typeof Build,
   prompt: string,
   context?: AgentContext
 ) {
+  // Enhance prompt with relevant skills
+  const skillEnhancedPrompt = await enhancePromptWithSkills(prompt, context);
+  
   const enhancedPrompt = context 
     ? `[Context]
 Working Directory: ${context.workingDirectory}
@@ -259,11 +267,13 @@ Files Modified: ${context.filesModified?.join(', ') || 'None'}
 Completed Steps: ${context.completedSteps?.length || 0}
 Remaining API Requests: ${rateLimiter.getRemainingRequests()}
 
+${skillRegistry.getSkillContext()}
+
 [Task]
-${prompt}
+${skillEnhancedPrompt}
 
 ${context.isComplete ? '[Note: Previous phase was marked as complete. Continue with next phase.]' : ''}`
-    : prompt;
+    : skillEnhancedPrompt;
   
   // Execute with rate limiting and retry logic
   const result = await executeWithRateLimit<StreamResult>(

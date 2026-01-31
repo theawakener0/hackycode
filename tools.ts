@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { skillRegistry } from './skills.ts';
 
 const execAsync = promisify(exec);
 
@@ -635,6 +636,67 @@ export const runCommandTool = tool({
       };
     }
   },
+});
+
+
+// Skill management tools
+export const listSkillsTool = tool({
+  description: 'List all available skills that can be used for specialized tasks. Use this when you need to know what specialized knowledge is available.',
+  inputSchema: z.object({}),
+  execute: async () => {
+    const skills = await skillRegistry.discoverSkills();
+    return {
+      skills: skills.map(s => ({ name: s.name, description: s.description })),
+      count: skills.length,
+      message: `Found ${skills.length} available skills`
+    };
+  }
+});
+
+export const useSkillTool = tool({
+  description: 'Load and use a specific skill for specialized knowledge. Use this when you need specialized expertise for a task (e.g., ai-sdk, react, testing, etc.).',
+  inputSchema: z.object({
+    skillName: z.string().describe('The name of the skill to use'),
+    reference: z.string().optional().describe('Specific reference file to load (optional)'),
+  }),
+  execute: async ({ skillName, reference }: { skillName: string; reference?: string }) => {
+    try {
+      const content = await skillRegistry.loadSkillContent(skillName, reference);
+      return {
+        skillName,
+        content: content.slice(0, 5000), // Limit content length
+        loaded: true,
+        message: `Loaded skill: ${skillName}`
+      };
+    } catch (error: any) {
+      return {
+        skillName,
+        loaded: false,
+        error: error.message,
+        message: `Failed to load skill: ${skillName}`
+      };
+    }
+  }
+});
+
+export const findSkillTool = tool({
+  description: 'Find the best matching skill for a specific task. Use this to discover which skill is most relevant for your current task.',
+  inputSchema: z.object({
+    task: z.string().describe('Description of the task you need help with'),
+  }),
+  execute: async ({ task }: { task: string }) => {
+    const bestSkill = skillRegistry.findBestSkill(task);
+    const suggestions = skillRegistry.suggestSkills(task);
+    
+    return {
+      task,
+      bestMatch: bestSkill ? { name: bestSkill.name, description: bestSkill.description } : null,
+      suggestions: suggestions.map(s => ({ name: s.name, description: s.description })),
+      message: bestSkill 
+        ? `Best matching skill: ${bestSkill.name}`
+        : 'No specific skill found for this task'
+    };
+  }
 });
 
 // Export all tools as a collection

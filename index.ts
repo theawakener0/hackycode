@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as tool from './tools.ts';
 import * as agent from './agents.ts';
 import { hackclub, model, setModel } from './config.ts';
+import { skillRegistry } from './skills.ts';
 
 // Colors
 const red = Bun.color("red", "ansi");
@@ -523,6 +524,53 @@ for (;;) {
     continue;
   }
   
+  if (input.toLowerCase() === '/skills') {
+    startSpinner('Discovering skills...');
+    try {
+      const skills = await skillRegistry.discoverSkills();
+      stopSpinner(`Found ${skills.length} skills`);
+      
+      if (skills.length === 0) {
+        console.log(gray + "No skills found. Install skills with: /skills install <owner/repo@skill>" + reset);
+      } else {
+        console.log(`\n${bold}${cyan}Available Skills:${reset}`);
+        console.log(`${gray}────────────────────────────────────────${reset}`);
+        for (const skill of skills) {
+          console.log(`${yellow}${skill.name}${reset}`);
+          console.log(`${gray}  ${skill.description.slice(0, 80)}${skill.description.length > 80 ? '...' : ''}${reset}`);
+        }
+        console.log(`${gray}────────────────────────────────────────${reset}\n`);
+      }
+    } catch (error) {
+      stopSpinner();
+      console.log(`${red}Failed to discover skills.${reset}`);
+    }
+    continue;
+  }
+  
+  if (input.toLowerCase().startsWith('/skills install ')) {
+    const skillRef = input.slice(16).trim();
+    if (!skillRef) {
+      console.log(red + "Usage: /skills install <owner/repo@skill>" + reset);
+      continue;
+    }
+    
+    startSpinner(`Installing skill: ${skillRef}...`);
+    try {
+      const success = await skillRegistry.installSkill(skillRef);
+      if (success) {
+        stopSpinner(`Skill ${skillRef} installed successfully`);
+      } else {
+        stopSpinner();
+        console.log(`${red}Failed to install skill: ${skillRef}${reset}`);
+      }
+    } catch (error: any) {
+      stopSpinner();
+      console.log(`${red}Error installing skill: ${error.message}${reset}`);
+    }
+    continue;
+  }
+  
   if (input.toLowerCase() === '/help') {
     console.log(`\n${bold}${cyan}Available Commands:${reset}`);
     console.log(`${gray}────────────────────────────────────────${reset}`);
@@ -537,6 +585,8 @@ for (;;) {
     console.log(`${yellow}/models${reset}          List available models`);
     console.log(`${yellow}/pwd${reset}             Show working directory`);
     console.log(`${yellow}/cd [path]${reset}       Change working directory`);
+    console.log(`${yellow}/skills${reset}          List available skills`);
+    console.log(`${yellow}/skills install <ref>${reset} Install a skill`);
     console.log(`${yellow}/help${reset}            Show this help message`);
     console.log(`${gray}────────────────────────────────────────${reset}`);
     console.log(`\n${bold}${cyan}Available Tools:${reset}`);

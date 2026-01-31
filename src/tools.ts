@@ -709,3 +709,9 @@ export const allTools = {
   searchCodebaseTool,
   runCommandTool
 };
+
+// Re-export new tools from their modules
+export { webfetchTool } from './tools/webfetch.ts';
+export { lspTool, findSymbolTool } from './tools/lsp.ts';
+export { createTodoTool, updateTodoTool, listTodosTool, deleteTodoTool, todoManager } from './tools/todo.ts';
+export { questionTool, recordAnswerTool, questionHistory } from './tools/question.ts';

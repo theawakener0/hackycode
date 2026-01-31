@@ -2,6 +2,7 @@ import { ToolLoopAgent } from "ai";
 import { model, hackclub } from "./config.ts";
 import * as tools from "./tools.ts";
 import { skillRegistry, enhancePromptWithSkills } from "./skills.ts";
+import { agentsMdLoader, formatAgentsMdForContext } from "./context/agents-md.ts";
 import BASE_PROMPT from "./prompts/agents/base.txt";
 import PLAN_PROMPT from "./prompts/agents/plan.txt";
 import BUILD_PROMPT from "./prompts/agents/build.txt";
@@ -96,6 +97,11 @@ const sharedTools = {
   listSkills: tools.listSkillsTool,
   useSkill: tools.useSkillTool,
   findSkill: tools.findSkillTool,
+  webfetch: tools.webfetchTool,
+  lsp: tools.lspTool,
+  findSymbol: tools.findSymbolTool,
+  question: tools.questionTool,
+  recordAnswer: tools.recordAnswerTool,
 };
 
 // Custom stop condition that checks for completion
@@ -116,7 +122,10 @@ function createSmartStopCondition(maxSteps: number) {
           text.includes('implementation complete') ||
           text.includes('plan complete') ||
           text.includes('build successful') ||
-          text.includes('done.')) {
+          text.endsWith('done.') ||
+          text.endsWith('done') ||
+          text.endsWith('all done') ||
+          text.endsWith('all done.')) {
         console.log('[Agent] Task completion detected');
         return true;
       }
@@ -200,13 +209,24 @@ When you have completed all implementation tasks, you MUST end your response wit
 - "Task complete"
 - "All done"
 
-This signals that the implementation phase is done.`,
+This signals that the implementation phase is done.
+
+## Task Management with Todos:
+For multi-step implementations, use the todo tools to track progress:
+1. Create todos at the start: createTodoTool
+2. Update status as you work: updateTodoTool  
+3. List active todos anytime: listTodosTool
+This helps maintain context across long sessions.`,
   tools: {
     ...sharedTools,
     writeFile: tools.writeFileTool,
     editFile: tools.editFileTool,
+    createTodo: tools.createTodoTool,
+    updateTodo: tools.updateTodoTool,
+    listTodos: tools.listTodosTool,
+    deleteTodo: tools.deleteTodoTool,
   },
-  toolChoice: "required",
+  toolChoice: "auto",
   stopWhen: createSmartStopCondition(200), // Increased from 50 to 200
   maxRetries: MAX_RETRIES,
 });
@@ -250,7 +270,7 @@ export const allAgents = {
 
 export { tools };
 
-// Helper to run agents with context, rate limiting, and skills
+// Helper to run agents with context, rate limiting, skills, and AGENTS.md
 export async function runAgentWithContext(
   selectedAgent: typeof Plan | typeof Build,
   prompt: string,
@@ -259,6 +279,10 @@ export async function runAgentWithContext(
   // Enhance prompt with relevant skills
   const skillEnhancedPrompt = await enhancePromptWithSkills(prompt, context);
   
+  // Load AGENTS.md if available
+  const agentsMdContext = context ? await agentsMdLoader.load(context.workingDirectory) : null;
+  const agentsMdFormatted = formatAgentsMdForContext(agentsMdContext, 2000);
+  
   const enhancedPrompt = context 
     ? `[Context]
 Working Directory: ${context.workingDirectory}
@@ -266,6 +290,8 @@ Last Action: ${context.lastAction || 'None'}
 Files Modified: ${context.filesModified?.join(', ') || 'None'}
 Completed Steps: ${context.completedSteps?.length || 0}
 Remaining API Requests: ${rateLimiter.getRemainingRequests()}
+
+${agentsMdFormatted}
 
 ${skillRegistry.getSkillContext()}
 

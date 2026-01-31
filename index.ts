@@ -1,14 +1,9 @@
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { streamText, stepCountIs } from 'ai';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as tool from './tools.ts';
 import * as agent from './agents.ts';
-
-const hackclub = createOpenRouter({
-  apiKey: process.env.HACK_CLUB_AI_API_KEY,
-  baseUrl: 'https://ai.hackclub.com/proxy/v1',
-});
+import { hackclub, model, setModel } from './config.ts';
 
 // Colors
 const red = Bun.color("red", "ansi");
@@ -16,15 +11,19 @@ const gray = Bun.color("gray", "ansi");
 const green = Bun.color("green", "ansi");
 const yellow = Bun.color("yellow", "ansi");
 const cyan = Bun.color("cyan", "ansi");
+const blue = Bun.color("blue", "ansi");
+const magenta = Bun.color("magenta", "ansi");
 const reset = "\x1b[0m";
 const bold = "\x1b[1m";
 const dim = "\x1b[2m";
 
 let input: string | null = "";
-let model: string = "moonshotai/kimi-k2.5";
 let agentName: string = "";
-let context: string = "";
+let conversationContext: string = "";
 let workingDirectory: string = process.cwd();
+
+// Agent context management
+let agentContext = agent.createAgentContext(workingDirectory);
 
 // Spinner animation frames
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -48,20 +47,131 @@ function stopSpinner(successMessage?: string): void {
   }
   process.stdout.write('\x1b[?25h'); // Show cursor
   if (successMessage) {
-    console.log(`${green}✓${reset} ${dim}${successMessage}${reset}`);
+    console.log(`${green}[+]${reset} ${dim}${successMessage}${reset}`);
   }
 }
 
-// Tool indicator icons
+// Tool indicator symbols (ASCII instead of emoji)
 const toolIcons: Record<string, string> = {
-  searchweb: '🔍',
-  readFile: '📖',
-  writeFile: '✏️',
-  listFiles: '📁',
-  runCommand: '⚡',
-    editFile: '🛠️',
-    searchCodebase: '🔎',
+  searchweb: '[WEB]',
+  readFile: '[READ]',
+  writeFile: '[WRITE]',
+  listFiles: '[LIST]',
+  runCommand: '[EXEC]',
+  editFile: '[EDIT]',
+  searchCodebase: '[FIND]',
 };
+
+// Markdown to Terminal formatter
+class MarkdownFormatter {
+  private inCodeBlock = false;
+  private codeBlockLang = '';
+
+  format(text: string): string {
+    const lines = text.split('\n');
+    const formattedLines: string[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      
+      // Handle code blocks
+      if (line.startsWith('```')) {
+        if (!this.inCodeBlock) {
+          this.inCodeBlock = true;
+          this.codeBlockLang = line.slice(3).trim();
+          formattedLines.push(`${dim}--- ${this.codeBlockLang || 'code'} ---${reset}`);
+          continue;
+        } else {
+          this.inCodeBlock = false;
+          this.codeBlockLang = '';
+          formattedLines.push(`${dim}--- end ---${reset}`);
+          continue;
+        }
+      }
+
+      if (this.inCodeBlock) {
+        formattedLines.push(`${dim}${line}${reset}`);
+        continue;
+      }
+
+      // Handle headers
+      if (line.startsWith('### ')) {
+        formattedLines.push(`${bold}${magenta}${line.slice(4)}${reset}`);
+        continue;
+      }
+      if (line.startsWith('## ')) {
+        formattedLines.push(`${bold}${blue}${line.slice(3)}${reset}`);
+        continue;
+      }
+      if (line.startsWith('# ')) {
+        formattedLines.push(`${bold}${cyan}${line.slice(2)}${reset}`);
+        continue;
+      }
+
+      // Handle horizontal rules
+      if (line.match(/^---+$/)) {
+        const width = process.stdout.columns - 1 || 50;
+        formattedLines.push(`${gray}${'─'.repeat(width)}${reset}`);
+        continue;
+      }
+
+      // Handle blockquotes
+      if (line.startsWith('> ')) {
+        formattedLines.push(`${gray}> ${line.slice(2)}${reset}`);
+        continue;
+      }
+
+      // Handle lists
+      const unorderedMatch = line.match(/^(\s*)[-*+]\s(.+)$/);
+      if (unorderedMatch) {
+        const indent = unorderedMatch[1]?.length ?? 0;
+        const content = unorderedMatch[2] ?? '';
+        formattedLines.push(`${' '.repeat(indent)}${yellow}*${reset} ${this.formatInline(content)}`);
+        continue;
+      }
+
+      const orderedMatch = line.match(/^(\s*)\d+\.\s(.+)$/);
+      if (orderedMatch) {
+        const indent = orderedMatch[1]?.length ?? 0;
+        const content = orderedMatch[2] ?? '';
+        const numMatch = line.match(/^(\s*)(\d+)\./);
+        const num = numMatch?.[2] ?? '1';
+        formattedLines.push(`${' '.repeat(indent)}${yellow}${num}.${reset} ${this.formatInline(content)}`);
+        continue;
+      }
+
+      // Handle normal lines with inline formatting
+      formattedLines.push(this.formatInline(line));
+    }
+
+    return formattedLines.join('\n');
+  }
+
+  private formatInline(text: string): string {
+    // Bold: **text** or __text__
+    text = text.replace(/\*\*(.+?)\*\*/g, `${bold}$1${reset}`);
+    text = text.replace(/__(.+?)__/g, `${bold}$1${reset}`);
+
+    // Italic: *text* or _text_
+    text = text.replace(/\*(.+?)\*/g, `${dim}$1${reset}`);
+    text = text.replace(/_(.+?)_/g, `${dim}$1${reset}`);
+
+    // Inline code: `text`
+    text = text.replace(/`(.+?)`/g, `${cyan}$1${reset}`);
+
+    // Links: [text](url)
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `${blue}$1${reset}${dim}($2)${reset}`);
+
+    // Strikethrough: ~~text~~
+    text = text.replace(/~~(.+?)~~/g, `${gray}$1${reset}`);
+
+    return text;
+  }
+}
+
+// Create markdown formatter instance
+const markdownFormatter = new MarkdownFormatter();
 
 let logo: string = `                                                                      
    ▄▄▄  ▄▄▄                          ▄▄                  ▄▄     ▄▄▄▄▄▄
@@ -70,7 +180,7 @@ let logo: string = `
     ██████   ▄▀▀█▄ ▄███▀ ██ ▄█▀ ▄███▀ ██ ██ ██ ████▄   ██▀▀██     ██  
     ██  ██   ▄█▀██ ██    ████   ██    ██ ██ ██ ██ ██ ▄ ██  ██     ██  
   ▀██▀  ▀██▄▄▀█▄██▄▀███▄▄██ ▀█▄▄▀███▄▄██▄▀██▀█▄████▀ ▀██▀  ▀█▄█ ▄▄██▄▄
-                                                                       
+                                                                        
                                                                        `;
 
 
@@ -82,13 +192,13 @@ const tools = {
   writeFile: tool.writeFileTool,
   listFiles: tool.listFilesTool,
   runCommand: tool.runCommandTool,
-    editFile: tool.editFileTool,
-    searchCodebase: tool.searchCodebase,
+  editFile: tool.editFileTool,
+  searchCodebase: tool.searchCodebaseTool,
 };
 
 // Format tool result for display
 function formatToolResult(toolName: string, result: unknown): string {
-  const icon = toolIcons[toolName] || '🔧';
+  const icon = toolIcons[toolName] || '[TOOL]';
   const res = result as Record<string, unknown>;
   
   if (res.error) {
@@ -105,13 +215,16 @@ function formatToolResult(toolName: string, result: unknown): string {
       return `${green}${icon} Search completed${reset}`;
       
     case 'readFile':
-      return `${green}${icon} Read ${res.totalLines} lines from ${path.basename(res.path as string)}${res.truncated ? ' (truncated)' : ''}${reset}`;
+      const readPath = (res.absolutePath || res.path) as string;
+      return `${green}${icon} Read ${res.totalLines} lines from ${path.basename(readPath)}${res.truncated ? ' (truncated)' : ''}${reset}`;
       
     case 'writeFile':
-      return `${green}${icon} Wrote ${res.bytesWritten} bytes to ${path.basename(res.path as string)}${reset}`;
+      const writePath = (res.absolutePath || res.path) as string;
+      return `${green}${icon} Wrote ${res.bytesWritten} bytes to ${path.basename(writePath)}${reset}`;
       
     case 'listFiles':
-      return `${green}${icon} Found ${res.count} entries in ${path.basename(res.path as string) || '.'}${reset}`;
+      const listPath = (res.absolutePath || res.path) as string;
+      return `${green}${icon} Found ${res.count} entries in ${path.basename(listPath) || '.'}${reset}`;
       
     case 'runCommand':
       if (res.success) {
@@ -119,7 +232,8 @@ function formatToolResult(toolName: string, result: unknown): string {
       }
       return `${yellow}${icon} Command finished with exit code: ${res.exitCode}${reset}`;
     case 'editFile':
-      return `${green}${icon} Edited ${path.basename(res.path as string)} successfully${reset}`;
+      const editPath = (res.absolutePath || res.file || res.path) as string;
+      return `${green}${icon} Edited ${path.basename(editPath)} successfully${reset}`;
     case 'searchCodebase':
       const codeResults = res.results as unknown[] | undefined;
       if (codeResults) {
@@ -130,6 +244,144 @@ function formatToolResult(toolName: string, result: unknown): string {
       
     default:
       return `${green}${icon} Tool completed${reset}`;
+  }
+}
+
+// Update agent context based on tool result
+function updateContextFromTool(toolName: string, result: Record<string, unknown>) {
+  if (result.error) {
+    agentContext = agent.updateAgentContext(agentContext, `${toolName} failed: ${result.error}`);
+    return;
+  }
+
+  // Update context based on the tool used
+  switch (toolName) {
+    case 'writeFile':
+    case 'editFile':
+      if (result.path || result.absolutePath) {
+        const filePath = (result.path || result.absolutePath) as string;
+        agentContext = agent.updateAgentContext(agentContext, `${toolName} completed`, filePath);
+      }
+      break;
+    case 'readFile':
+      if (result.path || result.absolutePath) {
+        const filePath = (result.path || result.absolutePath) as string;
+        agentContext = agent.updateAgentContext(agentContext, `Read ${result.totalLines} lines from ${path.basename(filePath as string)}`);
+      }
+      break;
+    case 'runCommand':
+      const cmd = (result.requestedCommand || result.executedCommand) as string;
+      const success = result.success ? 'succeeded' : 'failed';
+      agentContext = agent.updateAgentContext(agentContext, `Command "${cmd}" ${success}`);
+      break;
+    case 'searchCodebase':
+      const matches = result.matches as number;
+      agentContext = agent.updateAgentContext(agentContext, `Searched codebase: ${matches} matches`);
+      break;
+    default:
+      agentContext = agent.updateAgentContext(agentContext, `${toolName} completed`);
+  }
+}
+
+// Process agent stream with proper context management
+async function processAgentStream(
+  selectedAgent: typeof agent.Plan | typeof agent.Build,
+  userInput: string,
+  spinnerMessage: string
+) {
+  let accumulatedText = "";
+  let isFirstTextChunk = true;
+  let currentParagraph = "";
+
+  startSpinner(spinnerMessage);
+
+  try {
+    // Use the context-aware agent runner
+    const stream = await agent.runAgentWithContext(
+      selectedAgent,
+      userInput,
+      agentContext
+    );
+
+    for await (const part of stream) {
+      switch (part.type) {
+        case 'tool-call':
+          stopSpinner();
+          console.log("\n");
+          const icon = toolIcons[part.toolName] || '[TOOL]';
+          startSpinner(`${icon} Using ${part.toolName}...`);
+          break;
+          
+        case 'tool-result':
+          stopSpinner();
+          Bun.stdout.write("\n"+formatToolResult(part.toolName, part.output)+"\n");
+          // Update agent context based on tool result
+          updateContextFromTool(part.toolName, part.output as Record<string, unknown>);
+          break;
+          
+        case 'text-delta':
+          if (isFirstTextChunk) {
+            stopSpinner();
+            console.log("\n");
+            Bun.stdout.write(`${red}◆ ${reset}`);
+            isFirstTextChunk = false;
+          }
+          currentParagraph += part.text;
+          accumulatedText += part.text;
+          
+          // Check if we have a complete line to format
+          if (part.text.includes('\n')) {
+            const lines = currentParagraph.split('\n');
+            // Process all complete lines except the last (incomplete) one
+            for (let i = 0; i < lines.length - 1; i++) {
+              const line = lines[i];
+              if (line !== undefined) {
+                const formatted = markdownFormatter.format(line);
+                Bun.stdout.write(formatted + '\n');
+              }
+            }
+            // Keep the incomplete line for next iteration
+            const lastLine = lines[lines.length - 1];
+            currentParagraph = lastLine ?? '';
+          }
+          break;
+          
+        case 'error':
+          stopSpinner();
+          Bun.stdout.write("\n"+`${red}Error: ${part.error}${reset}`);
+          break;
+      }
+    }
+    
+    stopSpinner();
+    
+    // Format and display any remaining text in currentParagraph
+    if (currentParagraph) {
+      const formatted = markdownFormatter.format(currentParagraph);
+      Bun.stdout.write(formatted);
+    }
+    
+    if (accumulatedText) {
+      console.log("\n");
+      conversationContext += `\nUser: ${userInput}\nAssistant: ${accumulatedText}\n`;
+      
+      if (conversationContext.length > 8000) {
+        conversationContext = conversationContext.slice(-4000);
+      }
+      
+      // Update agent context with the response summary
+      agentContext = agent.updateAgentContext(
+        agentContext, 
+        `Response generated (${accumulatedText.length} chars)`
+      );
+    } else {
+      console.log("");
+    }
+    
+  } catch (error: unknown) {
+    stopSpinner();
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.log(`\n${red}Error: ${msg}${reset}\n`);
   }
 }
 
@@ -161,17 +413,23 @@ for (;;) {
   }
   
   if (input.toLowerCase() === '/clear-context') {
-    context = "";
+    conversationContext = "";
+    agentContext = agent.createAgentContext(workingDirectory);
     console.log(gray + "Context cleared." + reset);
     continue;
   }
   
   if (input.toLowerCase() === '/show-context') {
-    console.log(gray + "Current Context:" + reset);
-    console.log(gray + (context || "(empty)") + reset);
+    console.log(gray + "Conversation Context:" + reset);
+    console.log(gray + (conversationContext || "(empty)") + reset);
+    console.log(gray + "\nAgent Context:" + reset);
+    console.log(gray + `Working Directory: ${agentContext.workingDirectory}${reset}`);
+    console.log(gray + `Last Action: ${agentContext.lastAction || '(none)'}${reset}`);
+    console.log(gray + `Files Modified: ${agentContext.filesModified?.join(', ') || '(none)'}${reset}`);
     continue;
   }
-    if (input.toLowerCase() === '/agents') {
+
+  if (input.toLowerCase() === '/agents') {
     console.log(`\n${gray}Available Agents:${reset}`);
     console.log(`${gray}────────────────────────────────────────${reset}`);
     console.log(`${yellow}Plan${reset}       Software Architect Agent`);
@@ -179,22 +437,26 @@ for (;;) {
     console.log(`${gray}────────────────────────────────────────${reset}\n`);
     continue;
   }
-    if (input.toLowerCase().startsWith('/agent ')) {
-    const agentName = input.split(' ')[1];
-    if (agentName === 'Plan' || agentName === 'Build') {
+
+  if (input.toLowerCase().startsWith('/agent ')) {
+    const selectedAgent = input.split(' ')[1];
+    if (selectedAgent === 'Plan' || selectedAgent === 'Build') {
+      agentName = selectedAgent;
       console.log(gray + `Switched to agent: ${agentName}` + reset);
     } else {
-      console.log(red + `Agent not found: ${agentName}` + reset);
+      console.log(red + `Agent not found: ${selectedAgent}` + reset);
     }
     continue;
   }
  
-    if (input.toLowerCase() === '/agent') {
+  if (input.toLowerCase() === '/agent') {
     console.log(gray + `Current Agent: ${agentName || "(none)"}` + reset);
     continue;
   }
-    if (input.toLowerCase() === '/agent-reset') {
+
+  if (input.toLowerCase() === '/agent-reset') {
     agentName = "";
+    agentContext = agent.createAgentContext(workingDirectory);
     console.log(gray + "Agent reset to default." + reset);
     continue;
   }
@@ -205,7 +467,10 @@ for (;;) {
   }
   
   if (input.toLowerCase().startsWith('/model ')) {
-    model = input.split(' ')[1] || model;
+    const newModel = input.split(' ')[1];
+    if (newModel) {
+      setModel(newModel);
+    }
     console.log(gray + "Model changed to: " + model + reset);
     continue;
   }
@@ -221,7 +486,7 @@ for (;;) {
 
       json.data.forEach((m: { id: string }) => {
         const isCurrent = m.id === model;
-        console.log(`${gray} ${isCurrent ? green + '●' : '○'} ${m.id}${isCurrent ? ' (current)' : ''}${reset}`);
+        console.log(`${gray} ${isCurrent ? green + '>' : ' '} ${m.id}${isCurrent ? ' (current)' : ''}${reset}`);
       });
       console.log("");
     } catch {
@@ -246,6 +511,8 @@ for (;;) {
       const stats = await fs.promises.stat(absolutePath);
       if (stats.isDirectory()) {
         workingDirectory = absolutePath;
+        // Update agent context with new working directory
+        agentContext = agent.createAgentContext(workingDirectory);
         console.log(`${gray}Changed to: ${workingDirectory}${reset}`);
       } else {
         console.log(`${red}Not a directory: ${absolutePath}${reset}`);
@@ -261,10 +528,10 @@ for (;;) {
     console.log(`${gray}────────────────────────────────────────${reset}`);
     console.log(`${yellow}/exit${reset}, ${yellow}/quit${reset}     Exit the application`);
     console.log(`${yellow}/clear${reset}           Clear the console`);
-    console.log(`${yellow}/clear-context${reset}   Clear conversation context`);
-    console.log(`${yellow}/show-context${reset}    Show current context`);
-    console.log(`${yellow}/agents${reset}         List available agents`);
-    console.log(`${yellow}/agent [name]${reset}   Switch to an agent`);
+    console.log(`${yellow}/clear-context${reset}   Clear conversation and agent context`);
+    console.log(`${yellow}/show-context${reset}    Show current contexts`);
+    console.log(`${yellow}/agents${reset}          List available agents`);
+    console.log(`${yellow}/agent [name]${reset}    Switch to an agent`);
     console.log(`${yellow}/model${reset}           Show current model`);
     console.log(`${yellow}/model [name]${reset}    Change the model`);
     console.log(`${yellow}/models${reset}          List available models`);
@@ -291,211 +558,123 @@ for (;;) {
 
   // Process AI request
   console.log("");
-  
-  let accumulatedText = "";
-  let isFirstTextChunk = true;
 
-    // ======================
-    // Agent-based processing
-    // ======================
-
-    // Plan Agent
-    if (agentName === 'Plan') {
-        startSpinner('Planning...');
-        const { fullStream } = await agent.Plan.stream({
-            prompt: input + `\nProvide a detailed implementation plan as per your instructions, this is the current directory ${workingDirectory}.`,
-        });
-          try {
-            for await (const part of fullStream) {
-              switch (part.type) {
-                case 'tool-call':
-                    stopSpinner();
-                    console.log("\n");
-                  const icon = toolIcons[part.toolName] || '🔧';
-                  startSpinner(`${icon} Using ${part.toolName}...`);
-                  break;
-                  
-                case 'tool-result':
-                  stopSpinner();
-                  console.log("\n"+formatToolResult(part.toolName, part.output));
-                  break;
-                  
-                case 'text-delta':
-                  if (isFirstTextChunk) {
-                    stopSpinner();
-                    console.log("\n");
-                    Bun.stdout.write(`${red}◆ ${reset}`);
-                    isFirstTextChunk = false;
-                  }
-                  Bun.stdout.write(part.text);
-                  accumulatedText += part.text;
-                  break;
-                  
-                case 'error':
-                  stopSpinner();
-                  console.log(`\n${red}Error: ${part.error}${reset}`);
-                  break;
-              }
-            }
-            
-            stopSpinner();
-            
-            if (accumulatedText) {
-              console.log("\n");
-              context += `\nUser: ${input}\nAssistant: ${accumulatedText}\n`;
-              
-              if (context.length > 8000) {
-                context = context.slice(-4000);
-              }
-            } else {
-              console.log("");
-            }
-            
-          } catch (error: unknown) {
-            stopSpinner();
-            const msg = error instanceof Error ? error.message : 'Unknown error';
-            console.log(`\n${red}Error: ${msg}${reset}\n`);
-          }
-        } else if (agentName === 'Build') {
-            // Build Agent
-            startSpinner('Building...');
-            const { fullStream } = await agent.Build.stream({
-                prompt: input + `\nExecute the build tasks as per your instructions, this is the current directory ${workingDirectory}.`,
-            });
-          try {
-            for await (const part of fullStream) {
-              switch (part.type) {
-                case 'tool-call':
-                    stopSpinner();
-                    console.log("\n");
-                  const icon = toolIcons[part.toolName] || '🔧';
-                  startSpinner(`${icon} Using ${part.toolName}...`);
-                  break;
-                  
-                case 'tool-result':
-                  stopSpinner();
-                  console.log("\n"+formatToolResult(part.toolName, part.output));
-                  break;
-                  
-                case 'text-delta':
-                  if (isFirstTextChunk) {
-                    stopSpinner();
-                    console.log("\n");
-                    Bun.stdout.write(`${red}◆ ${reset}`);
-                    isFirstTextChunk = false;
-                  }
-                  Bun.stdout.write(part.text);
-                  accumulatedText += part.text;
-                  break;
-                  
-                case 'error':
-                  stopSpinner();
-                  console.log(`\n${red}Error: ${part.error}${reset}`);
-                  break;
-              }
-            }
-            
-            stopSpinner();
-            
-            if (accumulatedText) {
-              console.log("\n");
-              context += `\nUser: ${input}\nAssistant: ${accumulatedText}\n`;
-              
-              if (context.length > 8000) {
-                context = context.slice(-4000);
-              }
-            } else {
-              console.log("");
-            }
-            
-          } catch (error: unknown) {
-            stopSpinner();
-            const msg = error instanceof Error ? error.message : 'Unknown error';
-            console.log(`\n${red}Error: ${msg}${reset}\n`);
-          }
-    } else {
+  // Agent-based processing
+  if (agentName === 'Plan') {
+    await processAgentStream(agent.Plan, input, 'Planning...');
+  } else if (agentName === 'Build') {
+    await processAgentStream(agent.Build, input, 'Building...');
+  } else {
     // Default HackclubAI processing
-        startSpinner('Thinking...');
-      try {
-        const { fullStream } = streamText({
-          model: hackclub(model),
-          system: `You are HackclubAI, a helpful coding assistant for Hack Club members.
-    You help with coding, debugging, explaining code, and answering questions about technology.
+    let accumulatedText = "";
+    let isFirstTextChunk = true;
+    let currentParagraph = "";
 
-    ## Your Capabilities:
-    You have access to these tools:
-    - searchweb: Search the web for current information
-    - readFile: Read file contents
-    - writeFile: Write content to files
-    - listFiles: List directory contents  
-    - runCommand: Execute shell commands
+    startSpinner('Thinking...');
+    try {
+      const { fullStream } = streamText({
+        model: hackclub(model),
+        system: `You are HackclubAI, a helpful coding assistant for Hack Club members.
+You help with coding, debugging, explaining code, and answering questions about technology.
 
-    ## Guidelines:
-    - Be concise and helpful
-    - When asked to work with files, use the appropriate tools
-    - Explain what you're doing when using tools
-    - For coding questions, provide clear explanations with examples
-    - Always consider security when running commands
+## Your Capabilities:
+You have access to these tools:
+- searchweb: Search the web for current information
+- readFile: Read file contents
+- writeFile: Write content to files
+- listFiles: List directory contents  
+- runCommand: Execute shell commands
 
-    ## Current Working Directory: ${workingDirectory}
+## Guidelines:
+- Be concise and helpful
+- When asked to work with files, use the appropriate tools
+- Explain what you're doing when using tools
+- For coding questions, provide clear explanations with examples
+- Always consider security when running commands
 
-    ## Conversation Context:
-    ${context}`,
-          tools,
-          toolChoice: 'auto',
-          stopWhen: stepCountIs(10),
-          prompt: input,
-        });
+## Current Working Directory: ${workingDirectory}
 
-        for await (const part of fullStream) {
-          switch (part.type) {
-            case 'tool-call':
-                stopSpinner();
-                console.log("\n");
-              const icon = toolIcons[part.toolName] || '🔧';
-              startSpinner(`${icon} Using ${part.toolName}...`);
-              break;
-              
-            case 'tool-result':
+## Conversation Context:
+${conversationContext}`,
+        tools,
+        toolChoice: 'auto',
+        stopWhen: stepCountIs(10),
+        prompt: input,
+      });
+
+      for await (const part of fullStream) {
+        switch (part.type) {
+          case 'tool-call':
+            stopSpinner();
+            console.log("\n");
+            const icon = toolIcons[part.toolName] || '[TOOL]';
+            startSpinner(`${icon} Using ${part.toolName}...`);
+            break;
+            
+          case 'tool-result':
+            stopSpinner();
+            Bun.stdout.write("\n" + formatToolResult(part.toolName, part.output) + "\n");
+            // Update agent context based on tool result
+            updateContextFromTool(part.toolName, part.output as Record<string, unknown>);
+            break;
+            
+          case 'text-delta':
+            if (isFirstTextChunk) {
               stopSpinner();
-              console.log("\n"+formatToolResult(part.toolName, part.output));
-              break;
-              
-            case 'text-delta':
-              if (isFirstTextChunk) {
-                stopSpinner();
-                console.log("\n");
-                Bun.stdout.write(`${red}◆ ${reset}`);
-                isFirstTextChunk = false;
+              console.log("\n");
+              Bun.stdout.write(`${red}◆ ${reset}`);
+              isFirstTextChunk = false;
+            }
+            currentParagraph += part.text;
+            accumulatedText += part.text;
+            
+            // Check if we have a complete line to format
+            if (part.text.includes('\n')) {
+              const lines = currentParagraph.split('\n');
+              // Process all complete lines except the last (incomplete) one
+              for (let i = 0; i < lines.length - 1; i++) {
+                const line = lines[i];
+                if (line !== undefined) {
+                  const formatted = markdownFormatter.format(line);
+                  Bun.stdout.write(formatted + '\n');
+                }
               }
-              Bun.stdout.write(part.text);
-              accumulatedText += part.text;
-              break;
-              
-            case 'error':
-              stopSpinner();
-              console.log(`\n${red}Error: ${part.error}${reset}`);
-              break;
-          }
+              // Keep the incomplete line for next iteration
+              const lastLine = lines[lines.length - 1];
+              currentParagraph = lastLine ?? '';
+            }
+            break;
+            
+          case 'error':
+            stopSpinner();
+            console.log(`\n${red}Error: ${part.error}${reset}`);
+            break;
         }
-        
-        stopSpinner();
-        
-        if (accumulatedText) {
-          console.log("\n");
-          context += `\nUser: ${input}\nAssistant: ${accumulatedText}\n`;
-          
-          if (context.length > 8000) {
-            context = context.slice(-4000);
-          }
-        } else {
-          console.log("");
-        }
-        
-      } catch (error: unknown) {
-        stopSpinner();
-        const msg = error instanceof Error ? error.message : 'Unknown error';
-        console.log(`\n${red}Error: ${msg}${reset}\n`);
       }
+      
+      stopSpinner();
+      
+      // Format and display any remaining text in currentParagraph
+      if (currentParagraph) {
+        const formatted = markdownFormatter.format(currentParagraph);
+        Bun.stdout.write(formatted);
+      }
+      
+      if (accumulatedText) {
+        console.log("\n");
+        conversationContext += `\nUser: ${input}\nAssistant: ${accumulatedText}\n`;
+        
+        if (conversationContext.length > 8000) {
+          conversationContext = conversationContext.slice(-4000);
+        }
+      } else {
+        console.log("");
+      }
+      
+    } catch (error: unknown) {
+      stopSpinner();
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      Bun.stdout.write(`\n${red}Error: ${msg}${reset}\n`);
     }
+  }
 }

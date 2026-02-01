@@ -5,7 +5,7 @@
 [![Vercel AI SDK](https://img.shields.io/badge/Vercel%20AI%20SDK-black?style=flat-square&logo=vercel&logoColor=white)](https://sdk.vercel.ai/docs)
 [![Hack Club](https://img.shields.io/badge/Hack%20Club-EC3750?style=flat-square&logo=hackclub&logoColor=white)](https://hackclub.com)
 
-**An AI-powered coding assistant for [Hack Club](https://hackclub.com) members.**
+**An AI-powered coding assistant for [Hack Club](https://hackclub.com) students.**
 
 HackyCode is a terminal-based AI coding agent that helps you plan, build, and ship software faster. It combines the power of modern AI models with a dual-agent architecture designed specifically for the Hack Club community.
 
